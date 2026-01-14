@@ -1,4 +1,4 @@
-module github/go-xuan/nacosx
+module github.com/go-xuan/nacosx
 
 go 1.18
 
