@@ -143,7 +143,7 @@ func (c *Client) ListenConfig(config any, param vo.ConfigParam) error {
 			WithField("namespace", namespace).
 			WithField("data", data)
 		logger.Info("the nacos config data has changed !!!")
-		if err := marshalx.Apply(dataId).Unmarshal([]byte(data), config); err != nil {
+		if err := marshalx.Apply(string(param.Type)).Unmarshal([]byte(data), config); err != nil {
 			logger.WithError(err).Error("update nacos config failed")
 		}
 	}
