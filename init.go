@@ -13,5 +13,5 @@ func Initialize() error {
 		return nil
 	}
 	logger.Warn("initialize failed")
-	return errorx.New("initialize nacosx failed")
+	return errorx.New("failed to initialize nacosx")
 }

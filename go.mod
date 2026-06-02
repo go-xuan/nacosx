@@ -3,7 +3,7 @@ module github.com/go-xuan/nacosx
 go 1.25
 
 require (
-	github.com/go-xuan/configx v1.26.7
+	github.com/go-xuan/configx v1.26.8
 	github.com/go-xuan/utilx v1.26.3
 	github.com/nacos-group/nacos-sdk-go v1.1.6
 	github.com/sirupsen/logrus v1.9.4
