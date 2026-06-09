@@ -3,8 +3,8 @@ module github.com/go-xuan/nacosx
 go 1.25
 
 require (
-	github.com/go-xuan/configx v1.26.9
-	github.com/go-xuan/utilx v1.26.5
+	github.com/go-xuan/configx v1.26.10
+	github.com/go-xuan/utilx v1.26.6
 	github.com/nacos-group/nacos-sdk-go v1.1.6
 	github.com/sirupsen/logrus v1.9.4
 )
@@ -14,7 +14,7 @@ require (
 	github.com/aliyun/alibaba-cloud-sdk-go v1.61.18 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/go-errors/errors v1.0.1 // indirect
-	github.com/go-xuan/typex v1.26.3 // indirect
+	github.com/go-xuan/typex v1.26.4 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/jmespath/go-jmespath v0.0.0-20180206201540-c2b33e8439af // indirect
 	github.com/json-iterator/go v1.1.6 // indirect
