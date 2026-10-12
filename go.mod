@@ -6,7 +6,7 @@ require (
 	github.com/go-xuan/configx v1.26.14
 	github.com/go-xuan/utilx v1.26.6
 	github.com/nacos-group/nacos-sdk-go v1.1.6
-	github.com/sirupsen/logrus v1.9.4
+	github.com/sirupsen/logrus v1.10.2
 )
 
 require (

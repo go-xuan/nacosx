@@ -1,7 +1,10 @@
 package nacosx
 
 import (
+	"net"
+	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-xuan/configx"
 	"github.com/go-xuan/utilx/errorx"
@@ -18,6 +21,8 @@ const (
 	OnlyConfig      = iota // 仅启用配置中心
 	OnlyNaming             // 仅启用服务发现
 	ConfigAndNaming        // 启用配置中心和服务发现
+
+	defaultPort = 8848 // nacos默认端口
 )
 
 // Config nacos连接配置
@@ -33,10 +38,10 @@ type Config struct {
 }
 
 // LogFields 日志字段
-func (c *Config) LogFields() map[string]interface{} {
-	fields := make(map[string]interface{})
+func (c *Config) LogFields() map[string]any {
+	fields := make(map[string]any)
 	fields["address"] = c.Address
-	fields["group"] = c.Group
+	fields["group"] = defaultGroupOf(c.Group) // 记录实际生效的分组，未配置时为默认分组
 	fields["namespace"] = c.Namespace
 	fields["mode"] = c.Mode
 	return fields
@@ -48,26 +53,63 @@ func (c *Config) Readers() []configx.Reader {
 	}
 }
 
+// Valid 配置是否可用：命名空间与至少一个有效服务地址必须显式配置
 func (c *Config) Valid() bool {
-	return c.Address != "" && c.Namespace != "" && c.Group != ""
+	if strings.TrimSpace(c.Namespace) == "" {
+		return false
+	}
+	// 地址按逗号分割，只要存在非空段就可用（" , " 这类写法不能算配了地址）
+	for _, addr := range stringx.Split(c.Address, ",") {
+		if addr != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultGroupOf 分组为空时按nacos默认分组兜底：
+// 服务发现的GroupName为空时SDK本就会填DEFAULT_GROUP，
+// 而配置读写遇到空分组会直接报"param.group can not be empty"，故统一兜底
+func defaultGroupOf(group string) string {
+	if group = strings.TrimSpace(group); group != "" {
+		return group
+	}
+	return constant.DEFAULT_GROUP
 }
 
 func (c *Config) Execute() error {
 	if _client == nil {
-		logger := log.WithFields(c.LogFields())
-		var err error
-		if _client, err = NewClient(c); err != nil {
-			logger.WithError(err).Error("create nacos client failed")
-			return errorx.Wrap(err, "create nacos client failed")
+		// 底层已按字段记录并包装错误，此处不再重复记录
+		client, err := NewClient(c)
+		if err != nil {
+			return err
 		}
-		logger.Info("init nacos success")
+		_client = client
+		log.WithFields(c.LogFields()).Info("init nacos success")
 	}
 	return nil
 }
 
-// AddressUrl nacos访问地址
+// AddressUrl nacos访问地址，取首个非空地址；未指定路径时补默认上下文，
+// 地址自带路径（如 http://host:8848/nacos）时原样返回，避免重复拼接
 func (c *Config) AddressUrl() string {
-	return c.Address + "/nacos"
+	for _, addr := range stringx.Split(c.Address, ",") {
+		if addr == "" {
+			continue
+		}
+		if !strings.Contains(addr, "://") {
+			addr = "http://" + addr
+		}
+		parsed, err := url.Parse(addr)
+		if err != nil {
+			continue // 地址非法时跳过，尝试下一个
+		}
+		if parsed.Path == "" || parsed.Path == "/" {
+			parsed.Path = "/nacos"
+		}
+		return strings.TrimSuffix(parsed.String(), "/")
+	}
+	return ""
 }
 
 // EnableNaming 是否开启服务注册
@@ -78,7 +120,7 @@ func (c *Config) EnableNaming() bool {
 // ClientConfig nacos客户端配置
 func (c *Config) ClientConfig() *constant.ClientConfig {
 	return &constant.ClientConfig{
-		NamespaceId:         c.Namespace,
+		NamespaceId:         namespaceId(c.Namespace),
 		AccessKey:           c.AccessKey,
 		SecretKey:           c.SecretKey,
 		Username:            c.Username,
@@ -91,23 +133,69 @@ func (c *Config) ClientConfig() *constant.ClientConfig {
 	}
 }
 
+// namespaceId 归一化命名空间：nacos公共命名空间的tenant为空串（sdk文档要求public场景传空串），
+// 而配置里习惯写public，此处统一转换，避免把public当作命名空间ID发给服务端
+func namespaceId(namespace string) string {
+	namespace = strings.TrimSpace(namespace)
+	if strings.EqualFold(namespace, "public") {
+		return ""
+	}
+	return namespace
+}
+
 // ServerConfigs nacos服务中间件配置
 func (c *Config) ServerConfigs() []constant.ServerConfig {
-	addrs := stringx.Split(c.Address, ",")
-	if len(addrs) == 0 {
-		log.Error("the address of nacos cannot be empty")
-		return nil
-	}
 	var configs []constant.ServerConfig
-	for _, addr := range addrs {
-		host, port := stringx.Cut(addr, ":")
-		configs = append(configs, constant.ServerConfig{
-			ContextPath: "/nacos",
-			IpAddr:      host,
-			Port:        uint64(stringx.ParseInt64(port, 8848)),
-		})
+	for _, addr := range stringx.Split(c.Address, ",") {
+		if addr == "" { // 跳过空地址，避免生成非法的服务配置
+			continue
+		}
+		configs = append(configs, serverConfigOf(addr))
+	}
+	if len(configs) == 0 {
+		log.Error("the address of nacos cannot be empty")
 	}
 	return configs
+}
+
+// serverConfigOf 解析单个服务地址，兼容host:port、[ipv6]:port与scheme://host:port/path三种写法；
+// scheme与path分别落到SDK的Scheme与ContextPath上（两者为空时SDK按http、/nacos兜底），
+// 与 AddressUrl 的口径保持一致；端口缺失或非法时回退默认端口，
+// ipv6地址补回中括号（SDK按 scheme://ip:port 拼接）
+func serverConfigOf(addr string) constant.ServerConfig {
+	scheme, contextPath := "", ""
+	if before, after, ok := strings.Cut(addr, "://"); ok {
+		scheme, addr = before, after
+	}
+	if idx := strings.Index(addr, "/"); idx >= 0 {
+		contextPath, addr = addr[idx:], addr[:idx]
+	}
+	host, port := addr, ""
+	if h, p, err := net.SplitHostPort(addr); err == nil {
+		host, port = h, p
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return constant.ServerConfig{
+		Scheme:      scheme,
+		ContextPath: strings.TrimSuffix(contextPath, "/"), // 空值时由SDK兜底为/nacos
+		IpAddr:      host,
+		Port:        parsePort(port, addr),
+	}
+}
+
+// parsePort 解析端口：未指定或超出范围时回退默认端口
+func parsePort(port, addr string) uint64 {
+	if port == "" {
+		return defaultPort
+	}
+	value := stringx.ParseInt64(port, 0)
+	if value <= 0 || value > 65535 {
+		log.Warnf("invalid port %q in nacos address %s, fallback to %d", port, addr, defaultPort)
+		value = defaultPort
+	}
+	return uint64(value)
 }
 
 func (c *Config) ClientParam() vo.NacosClientParam {
